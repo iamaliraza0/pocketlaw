@@ -48,12 +48,15 @@ class Document {
 
             if($stmt->execute()) {
                 $this->id = $this->conn->lastInsertId();
+                error_log("Document created successfully with ID: " . $this->id);
                 return true;
             }
             
+            error_log("Failed to execute document insert query");
             return false;
         } catch (Exception $e) {
             error_log("Document creation failed: " . $e->getMessage());
+            error_log("SQL Error Info: " . print_r($this->conn->errorInfo(), true));
             return false;
         }
     }

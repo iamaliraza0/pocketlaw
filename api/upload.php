@@ -29,13 +29,14 @@ try {
 
     $upload_dir = '../uploads/';
     if (!file_exists($upload_dir)) {
-        mkdir($upload_dir, 0777, true);
+        if (!mkdir($upload_dir, 0755, true)) {
+            throw new Exception('Failed to create upload directory');
+        }
     }
     
-    // Create contracts subdirectory
-    $contracts_dir = '../uploads/contracts/';
-    if (!file_exists($contracts_dir)) {
-        mkdir($contracts_dir, 0777, true);
+    // Ensure directory is writable
+    if (!is_writable($upload_dir)) {
+        throw new Exception('Upload directory is not writable');
     }
 
     $uploaded_files = [];
@@ -97,19 +98,31 @@ try {
         exit();
     }
 
+    // Log successful uploads
+    if (!empty($uploaded_files)) {
+        error_log("Successfully uploaded " . count($uploaded_files) . " files for user " . $_SESSION['user_id']);
+    }
+
     echo json_encode([
         'success' => true,
         'uploaded_files' => $uploaded_files,
         'errors' => $errors,
-        'message' => count($uploaded_files) . ' file(s) uploaded successfully'
+        'message' => count($uploaded_files) . ' file(s) uploaded successfully',
+        'total_uploaded' => count($uploaded_files),
+        'total_errors' => count($errors)
     ]);
 
 } catch (Exception $e) {
+    error_log("Upload error: " . $e->getMessage());
     http_response_code(500);
     echo json_encode(['error' => 'Server error: ' . $e->getMessage()]);
 }
 
 function processFile($original_name, $tmp_name, $file_size, $mime_type, $upload_dir, $document, $user_id) {
+    // Sanitize filename
+    $original_name = basename($original_name);
+    $original_name = preg_replace('/[^a-zA-Z0-9._-]/', '_', $original_name);
+    
     // Validate file type
     $allowed_types = [
         'application/pdf',
@@ -122,10 +135,22 @@ function processFile($original_name, $tmp_name, $file_size, $mime_type, $upload_
         'image/webp'
     ];
     
+    // Additional MIME type validation
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+    $detected_mime = finfo_file($finfo, $tmp_name);
+    finfo_close($finfo);
+    
     if (!in_array($mime_type, $allowed_types)) {
         return [
             'success' => false,
             'error' => "File type not allowed for {$original_name}. Allowed types: PDF, DOC, DOCX, TXT, JPG, PNG, GIF, WEBP"
+        ];
+    }
+    
+    if (!in_array($detected_mime, $allowed_types)) {
+        return [
+            'success' => false,
+            'error' => "Detected file type not allowed for {$original_name}"
         ];
     }
     
@@ -137,23 +162,37 @@ function processFile($original_name, $tmp_name, $file_size, $mime_type, $upload_
         ];
     }
     
+    // Validate file size is not zero
+    if ($file_size <= 0) {
+        return [
+            'success' => false,
+            'error' => "Invalid file size for {$original_name}"
+        ];
+    }
+    
     // Generate unique filename
     $file_extension = pathinfo($original_name, PATHINFO_EXTENSION);
-    $filename = uniqid() . '_' . time() . '.' . $file_extension;
+    $safe_name = pathinfo($original_name, PATHINFO_FILENAME);
+    $safe_name = preg_replace('/[^a-zA-Z0-9_-]/', '_', $safe_name);
+    $filename = uniqid() . '_' . time() . '_' . $safe_name . '.' . $file_extension;
     $file_path = $upload_dir . $filename;
     
     if (move_uploaded_file($tmp_name, $file_path)) {
+        // Set proper file permissions
+        chmod($file_path, 0644);
+        
         // Save to database
         $document->user_id = $user_id;
         $document->filename = $filename;
         $document->original_name = $original_name;
         $document->file_path = $file_path;
         $document->file_size = $file_size;
-        $document->mime_type = $mime_type;
+        $document->mime_type = $detected_mime; // Use detected MIME type
         $document->status = 'uploaded';
         $document->ai_processed = false;
         
         if ($document->create()) {
+            error_log("Document saved to database: " . $original_name . " (ID: " . $document->id . ")");
             return [
                 'success' => true,
                 'data' => [
@@ -161,7 +200,7 @@ function processFile($original_name, $tmp_name, $file_size, $mime_type, $upload_
                     'filename' => $filename,
                     'original_name' => $original_name,
                     'size' => $file_size,
-                    'mime_type' => $mime_type,
+                    'mime_type' => $detected_mime,
                     'status' => 'uploaded',
                     'created_at' => date('Y-m-d H:i:s')
                 ]
@@ -171,12 +210,14 @@ function processFile($original_name, $tmp_name, $file_size, $mime_type, $upload_
             if (file_exists($file_path)) {
                 unlink($file_path);
             }
+            error_log("Failed to save document to database: " . $original_name);
             return [
                 'success' => false,
                 'error' => "Failed to save {$original_name} to database"
             ];
         }
     } else {
+        error_log("Failed to move uploaded file: " . $original_name . " to " . $file_path);
         return [
             'success' => false,
             'error' => "Failed to upload {$original_name}"

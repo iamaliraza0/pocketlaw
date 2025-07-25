@@ -74,7 +74,10 @@ class Database {
                 ai_processed BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX idx_user_created (user_id, created_at),
+                INDEX idx_status (status),
+                INDEX idx_ai_processed (ai_processed)
             )");
             
             // Create ai_conversations table if not exists
@@ -126,12 +129,26 @@ class Database {
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );");
             
+            // Ensure upload directory exists and is writable
+            $upload_dir = __DIR__ . '/../uploads/';
+            if (!file_exists($upload_dir)) {
+                if (!mkdir($upload_dir, 0755, true)) {
+                    error_log("Failed to create upload directory: " . $upload_dir);
+                }
+            }
+            
+            // Set proper permissions
+            if (file_exists($upload_dir) && !is_writable($upload_dir)) {
+                chmod($upload_dir, 0755);
+            }
+            
             // Insert demo user if not exists
             $stmt = $conn->prepare("SELECT COUNT(*) FROM users WHERE email = ?");
             $stmt->execute(['user@pocketlegal.com']);
             if ($stmt->fetchColumn() == 0) {
                 $stmt = $conn->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
                 $stmt->execute(['Pocketlegal', 'user@pocketlegal.com', password_hash('password123', PASSWORD_DEFAULT)]);
+                error_log("Demo user created successfully");
             }
             
             return true;
